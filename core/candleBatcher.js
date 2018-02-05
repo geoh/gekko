@@ -43,7 +43,7 @@ CandleBatcher.prototype.check = function() {
 }
 
 CandleBatcher.prototype.calculate = function() {
-  var first = this.smallCandles.shift();
+  var first = _.assign({}, this.smallCandles.shift());
 
   first.vwp = first.vwp * first.volume;
 
