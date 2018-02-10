@@ -6,7 +6,7 @@
 // Acts as ~fake~ stream: takes
 // 1m candles as input and emits
 // bigger candles.
-// 
+//
 // input are transported candles.
 
 var _ = require('lodash');
@@ -56,6 +56,7 @@ CandleBatcher.prototype.calculate = function() {
       candle.volume += m.volume;
       candle.vwp += m.vwp * m.volume;
       candle.trades += m.trades;
+      candle.created = m.start;
       return candle;
     },
     first
