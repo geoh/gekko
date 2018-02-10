@@ -5,6 +5,9 @@ var config = util.getConfig();
 var dirs = util.dirs();
 var log = require(dirs.core + 'log');
 var cp = require(dirs.core + 'cp');
+var CandleBatcher = require('../../core/candleBatcher');
+var CandlePropsCache = require('./candlePropsCache');
+var RollingCandleBatcher = require('./rollingCandleBatcher');
 
 var ENV = util.gekkoEnv();
 var mode = util.gekkoMode();
@@ -54,20 +57,12 @@ var Base = function(settings) {
   this.talibIndicators = {};
   this.tulipIndicators = {};
   this.asyncTick = false;
-  this.candlePropsCacheSize = 1000;
+  this.candlePropsCaches = {};
+  this.candleBatchers = {};
+  this.rollingCandleBatchers = {};
   this.deferredTicks = [];
 
   this._prevAdvice;
-
-  this.candleProps = {
-    open: [],
-    high: [],
-    low: [],
-    close: [],
-    volume: [],
-    vwp: [],
-    trades: []
-  };
 
   // make sure we have all methods
   _.each(['init', 'check'], function(fn) {
@@ -102,6 +97,23 @@ var Base = function(settings) {
 // teach our base trading method events
 util.makeEventEmitter(Base);
 
+// Useful method to use a cached CandleBatcher within a strategy
+Base.prototype.getCandleBatcher = function(candleSize) {
+  if (!(candleSize in this.candleBatchers))
+    this.candleBatchers[candleSize] = new CandleBatcher(candleSize);
+
+  return this.candleBatchers[candleSize];
+}
+
+// Useful method to use a cached RollingCandleBatcher within a strategy
+Base.prototype.getRollingCandleBatcher = function(candleHistory, updateFrequency, allowPartialFirst) {
+  var cacheKey = `${candleHistory}_${updateFrequency}`;
+  if (!(cacheKey in this.rollingCandleBatchers))
+    this.rollingCandleBatchers[cacheKey] = new RollingCandleBatcher(candleHistory, updateFrequency, allowPartialFirst);
+
+  return this.rollingCandleBatchers[cacheKey];
+}
+
 Base.prototype.tick = function(candle) {
 
   if(
@@ -121,33 +133,18 @@ Base.prototype.tick = function(candle) {
   this.age++;
 
   if(this.asyncTick) {
-    this.candleProps.open.push(candle.open);
-    this.candleProps.high.push(candle.high);
-    this.candleProps.low.push(candle.low);
-    this.candleProps.close.push(candle.close);
-    this.candleProps.volume.push(candle.volume);
-    this.candleProps.vwp.push(candle.vwp);
-    this.candleProps.trades.push(candle.trades);
-
-    if(this.age > this.candlePropsCacheSize) {
-      this.candleProps.open.shift();
-      this.candleProps.high.shift();
-      this.candleProps.low.shift();
-      this.candleProps.close.shift();
-      this.candleProps.volume.shift();
-      this.candleProps.vwp.shift();
-      this.candleProps.trades.shift();
-    }
+    _.each(this.candlePropsCaches, function(cache) {
+      cache.write([candle]);
+    });
   }
 
-  // update all indicators
-  var price = candle[this.priceValue];
-  _.each(this.indicators, function(i) {
-    if(i.input === 'price')
-      i.update(price);
-    if(i.input === 'candle')
-      i.update(candle);
-  },this);
+  _.each(this.candleBatchers, function(batcher) {
+    batcher.write([candle]);
+  });
+
+  _.each(this.rollingCandleBatchers, function(batcher) {
+    batcher.write([candle]);
+  });
 
   // update the trading method
   if(!this.asyncTick) {
@@ -159,48 +156,34 @@ Base.prototype.tick = function(candle) {
       () => this.propogateTick(candle)
     );
 
-    var basectx = this;
-
-    // handle result from talib
-    var talibResultHander = function(err, result) {
-      if(err)
-        util.die('TALIB ERROR:', err);
-
-      // fn is bound to indicator
-      this.result = _.mapValues(result, v => _.last(v));
-      next(candle);
-    }
-
-    // handle result from talib
-    _.each(
-      this.talibIndicators,
-      indicator => indicator.run(
-        basectx.candleProps,
-        talibResultHander.bind(indicator)
-      )
-    );
-
-    // handle result from tulip
-    var tulindResultHander = function(err, result) {
-      if(err)
-        util.die('TULIP ERROR:', err);
-
-      // fn is bound to indicator
-      this.result = _.mapValues(result, v => _.last(v));
-      next(candle);
-    }
-
-    // handle result from tulip indicators
-    _.each(
-      this.tulipIndicators,
-      indicator => indicator.run(
-        basectx.candleProps,
-        tulindResultHander.bind(indicator)
-      )
-    );
+    // handle results from talib and tulip indicators
+    this.runAsyncIndicators('TALIB', this.talibIndicators, candle, next);
+    this.runAsyncIndicators('TULIP', this.tulipIndicators, candle, next);
   }
 
   this.propogateCustomCandle(candle);
+}
+
+// Standardised method to run all Talib and Tulip indicators
+Base.prototype.runAsyncIndicators = function(name, indicators, candle, done) {
+  var resultHander = function(err, result) {
+    if(err)
+      util.die(name + ' ERROR:', err);
+
+    // fn is bound to indicator
+    this.result = _.mapValues(result, v => _.last(v));
+    done(candle);
+  }
+
+  // handle result from indicators
+  _.each(
+    indicators,
+    indicator => indicator.run(
+      this.candlePropsCaches[indicator.cacheKey].candleProps,
+      resultHander.bind(indicator)
+    ),
+    this
+  );
 }
 
 // if this is a child process the parent might
@@ -231,7 +214,7 @@ Base.prototype.propogateTick = function(candle) {
   if(mode === 'realtime'){
     // Subtract number of minutes in current candle for instant start
     let startTimeMinusCandleSize = startTime.clone();
-    startTimeMinusCandleSize.subtract(this.tradingAdvisor.candleSize, "minutes"); 
+    startTimeMinusCandleSize.subtract(this.tradingAdvisor.candleSize, "minutes");
     
     isPremature = candle.start < startTimeMinusCandleSize;
   }
@@ -254,13 +237,9 @@ Base.prototype.propogateTick = function(candle) {
   }
 
   // emit for UI
-  _.each(this.indicators, (indicator, name) => {
-    cp.indicatorResult({
-      name,
-      date: candle.start,
-      result: indicator.result
-    });
-  })
+  this.emitIndicatorResults(this.indicators, candle);
+  this.emitIndicatorResults(this.tulipIndicators, candle);
+  this.emitIndicatorResults(this.talibIndicators, candle);
 
   // are we totally finished?
   var done = this.age === this.processedTicks;
@@ -268,11 +247,46 @@ Base.prototype.propogateTick = function(candle) {
     this.finishCb();
 }
 
+// Process indicator results. Only sending data when the indicator has
+// just been updated and has chart settings defined.
+Base.prototype.emitIndicatorResults = function(indicators, candle) {
+  _.each(
+    indicators,
+    (indicator, name) => {
+      if (!_.isEmpty(indicator.chart) && indicator.lastUpdate == candle.start) {
+        this.emitIndicatorDataToUI({
+          name,
+          date: candle.start,
+          result: indicator.result,
+          type: indicator.type,
+          chart: indicator.chart
+        });
+      }
+    },
+    this
+  );
+}
+
+// Useful function to send custom strategy data to the UI
+Base.prototype.emitIndicatorDataToUI = function(data) {
+  cp.indicatorResult(data);
+}
+
 Base.prototype.processTrade = function(trade) {
   this.onTrade(trade);
 }
 
-Base.prototype.addTalibIndicator = function(name, type, parameters) {
+Base.prototype.createIndicatorPropsCache = function(indicator, candleHistory, updateFrequency) {
+  if (!(indicator.cacheKey in this.candlePropsCaches))
+    this.candlePropsCaches[indicator.cacheKey] = new CandlePropsCache(candleHistory, updateFrequency);
+
+  // This allows us to only emit newly calculated results to avoid stepped chart lines
+  this.candlePropsCaches[indicator.cacheKey].on('candle', candle => {
+    indicator.lastUpdate = 'created' in candle ? candle.created : candle.start;
+  });
+}
+
+Base.prototype.addTalibIndicator = function(name, type, parameters, candleHistory = 1, updateFrequency = 1, chart = {}) {
   if(!talib)
     util.die('Talib is not enabled');
 
@@ -282,15 +296,22 @@ Base.prototype.addTalibIndicator = function(name, type, parameters) {
   if(this.setup)
     util.die('Can only add talib indicators in the init method!');
 
-  var basectx = this;
-
-  this.talibIndicators[name] = {
+  indicator = {
     run: talib[type].create(parameters),
+    name: name,
+    type: 'talib-' + type,
+    chart: chart,
+    cacheKey: `${candleHistory}_${updateFrequency}`,
+    lastUpdate: undefined,
     result: NaN
   }
+
+  this.createIndicatorPropsCache(indicator, candleHistory, updateFrequency);
+
+  this.talibIndicators[name] = indicator;
 }
 
-Base.prototype.addTulipIndicator = function(name, type, parameters) {
+Base.prototype.addTulipIndicator = function(name, type, parameters, candleHistory = 1, updateFrequency = 1, chart = {}) {
   if(!tulind)
   util.die('Tulip indicators is not enabled');
 
@@ -300,24 +321,52 @@ Base.prototype.addTulipIndicator = function(name, type, parameters) {
   if(this.setup)
     util.die('Can only add tulip indicators in the init method!');
 
-  var basectx = this;
-
-  this.tulipIndicators[name] = {
+  indicator = {
     run: tulind[type].create(parameters),
+    name: name,
+    type: 'tulip-' + type,
+    chart: chart,
+    cacheKey: `${candleHistory}_${updateFrequency}`,
+    lastUpdate: undefined,
     result: NaN
   }
+
+  this.createIndicatorPropsCache(indicator, candleHistory, updateFrequency);
+
+  this.tulipIndicators[name] = indicator;
 }
 
-Base.prototype.addIndicator = function(name, type, parameters) {
+Base.prototype.addIndicator = function(name, type, parameters, candleHistory = 1, updateFrequency = 1, chart = {}) {
   if(!_.contains(allowedIndicators, type))
     util.die('I do not know the indicator ' + type);
 
   if(this.setup)
     util.die('Can only add indicators in the init method!');
 
-  this.indicators[name] = new Indicators[type](parameters);
+  var indicator = _.assign(new Indicators[type](parameters), {
+    name: name,
+    type: type,
+    chart: {},
+    cacheKey: `${candleHistory}_${updateFrequency}`,
+    lastUpdate: undefined
+  });
 
-  // some indicators need a price stream, others need full candles
+  this.createIndicatorPropsCache(indicator, candleHistory, updateFrequency);
+
+  var cache = this.candlePropsCaches[indicator.cacheKey];
+
+  // We can automatically update these indicators using events.
+  // Some indicators need a price stream, others need full candles
+  if (indicator.input == 'price')
+    cache.on('candle', candle => {
+      indicator.update(candle[this.priceValue]);
+    });
+  if (indicator.input == 'candle')
+    cache.on('candle', candle => {
+      indicator.update(candle);
+    });
+
+  this.indicators[name] = indicator;
 }
 
 Base.prototype.advice = function(newPosition, _candle) {
