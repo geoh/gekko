@@ -30,13 +30,18 @@ module.exports = done => {
         console.log(message.log);
 
       else if(message.type === 'indicatorResult') {
-        if(!_.has(indicatorResults, message.indicatorResult.name))
-          indicatorResults[message.indicatorResult.name] = [];
+        var name = message.indicatorResult.name;
 
-        indicatorResults[message.indicatorResult.name].push({
-          result: message.indicatorResult.result,
-          date: message.indicatorResult.date
+        if(!_.has(indicatorResults, name))
+          indicatorResults[name] = { results: {} };
+
+        // Remove date and result values, but pass everything else to the ui
+        _.each(message.indicatorResult, function(val, key) {
+          if(!_.contains(['date', 'result'], key))
+            indicatorResults[name][key] = val;
         });
+
+        indicatorResults[name]['results'][message.indicatorResult.date] = message.indicatorResult.result;
       }
     },
     exit: status => {
