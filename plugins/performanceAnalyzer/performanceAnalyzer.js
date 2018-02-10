@@ -81,14 +81,14 @@ PerformanceAnalyzer.prototype.logRoundtripPart = function(trade) {
   if(trade.action === 'buy') {
     this.roundTrip.entry = {
       date: trade.date,
-      price: this.price,
-      total: this.current.asset * this.price,
+      price: trade.price,
+      total: trade.portfolio.asset * trade.price,
     }
   } else if(trade.action === 'sell') {
     this.roundTrip.exit = {
       date: trade.date,
-      price: this.price,
-      total: this.current.currency
+      price: trade.price,
+      total: trade.portfolio.currency
     }
 
     this.handleRoundtrip();
@@ -100,7 +100,7 @@ PerformanceAnalyzer.prototype.round = function(amount) {
 }
 
 PerformanceAnalyzer.prototype.handleRoundtrip = function() {
-  const roundtrip = {
+  var roundtrip = {
     entryAt: this.roundTrip.entry.date,
     entryPrice: this.roundTrip.entry.price,
     entryBalance: this.roundTrip.entry.total,
@@ -166,9 +166,10 @@ PerformanceAnalyzer.prototype.calculateReportStatistics = function() {
   return report;
 }
 
-PerformanceAnalyzer.prototype.finalize = function() {
+PerformanceAnalyzer.prototype.finalize = function(done) {
   const report = this.calculateReportStatistics();
   this.handler.finalize(report);
+  done();
 }
 
 

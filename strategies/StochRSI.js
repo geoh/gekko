@@ -16,7 +16,7 @@ var method = {};
 
 // prepare everything our method needs
 method.init = function() {
-	this.interval = this.settings.interval;
+  this.interval = this.settings.interval;
 
   this.trend = {
     direction: 'none',
@@ -25,7 +25,7 @@ method.init = function() {
     adviced: false
   };
 
-  this.requiredHistory = config.tradingAdvisor.historySize;
+  this.requiredHistory = this.tradingAdvisor.historySize;
 
   // define the indicators we need
   this.addIndicator('rsi', 'RSI', { interval: this.interval });
@@ -35,7 +35,7 @@ method.init = function() {
 
 // what happens on every new candle?
 method.update = function(candle) {
-	this.rsi = this.indicators.rsi.rsi;
+	this.rsi = this.indicators.rsi.result;
 
 	this.RSIhistory.push(this.rsi);
 
