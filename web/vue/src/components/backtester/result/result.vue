@@ -5,14 +5,14 @@
       h3 Backtest result
     result-summary(:report='result.report')
     .hr.contain
-    chart(:data='result', height='500')
+    highchart(:data='result', height='960')
     .hr.contain
     roundtripTable(:roundtrips='result.roundtrips')
 </template>
 
 <script>
 import resultSummary from './summary.vue'
-import chart from './chartWrapper.vue'
+import highchart from './highchartsWrapper.vue'
 import roundtripTable from './roundtripTable.vue'
 
 export default {
@@ -24,7 +24,7 @@ export default {
   components: {
     roundtripTable,
     resultSummary,
-    chart
+    highchart
   }
 }
 </script>
